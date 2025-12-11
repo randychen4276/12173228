@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>微型賽車遊戲 — 可打包成網站</title>
+  <style>
+    :root{--bg:#0b1020;--panel:#0f1724;--accent:#ff4d4d;--accent2:#ffd166;}
+    html,body{height:100%;margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,'Noto Sans TC',sans-serif;background:var(--bg);color:#e6eef8}
+    .wrap{display:grid;grid-template-columns:1fr 360px;gap:18px;padding:18px;box-sizing:border-box;height:100%}
+    .gameCard{background:linear-gradient(180deg,#071021 0%, #0b1424 100%);border-radius:12px;padding:12px;display:flex;flex-direction:column}
+    canvas{display:block;border-radius:8px;background:#0b1628;width:100%;height:100%;}
+    .panel{background:var(--panel);border-radius:12px;padding:12px;min-height:120px}
+    h1{font-size:16px;margin:0 0 8px 0}
+    button{background:var(--accent);border:0;padding:10px 12px;border-radius:8px;color:#081018;cursor:pointer;font-weight:600}
+    .info{font-size:13px;line-height:1.4}
+    .controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+    .footer{margin-top:auto;font-size:12px;opacity:0.85}
+    .stat{display:flex;justify-content:space-between;padding:6px 8px;border-radius:8px;background:rgba(255,255,255,0.03);margin-top:6px}
+    .touchControls{display:none;gap:6px;margin-top:10px}
+    @media (max-width:900px){.wrap{grid-template-columns:1fr;color:#e6eef8}.panel{order:2}.touchControls{display:flex}.wrap{padding:8px}.panel{padding:8px}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="gameCard">
+      <h1>微型賽車 — 網頁版</h1>
+      <canvas id="game" width="900" height="540"></canvas>
+      <div class="footer">鍵盤: ← → 加速/煞車: ↑ ↓，或使用下方虛擬按鈕（手機）</div>
+      <div class="touchControls" id="touch">
+        <button id="leftBtn">◀</button>
+        <button id="accelBtn">▲</button>
+        <button id="rightBtn">▶</button>
+        <button id="brakeBtn">▼</button>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="info">
+        <div class="stat"><div>速度</div><div id="speed">0</div></div>
+        <div class="stat"><div>圈數</div><div id="lap">0 / 3</div></div>
+        <div class="stat"><div>時間</div><div id="time">00:00.000</div></div>
+        <div class="stat"><div>最佳圈</div><div id="best">—</div></div>
+      </div>
+      <div style="margin-top:12px;">
+        <button id="start">開始 / 重新開始</button>
+        <button id="toggleAI" style="margin-left:8px;background:var(--accent2);">加 AI 對手</button>
+      </div>
+      <div style="margin-top:12px;font-size:13px;opacity:0.95">
+        說明：這是一個單檔 HTML 遊戲。你可以把此檔上傳到 GitHub Pages、Vercel、Netlify 等靜態網站就會有網址。
+      </div>
+      <div style="margin-top:12px;font-size:13px">
+        可自訂：速度、關卡大小、障礙密度等。想要我幫你打包成 GitHub Pages 的步驟也可以。
+      </div>
+    </div>
+  </div>
+
+<script>
+// ------ 基本遊戲邏輯（簡潔、好讀、可拓展） ------
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let W = canvas.width, H = canvas.height;
+
+// 玩家車輛資料結構
+const car = {
+  x: W*0.2, y: H*0.5, angle: 0, speed: 0,
+  width: 26, height: 46, maxSpeed: 5, accel: 0.12, friction: 0.03,
+  color: '#ff4d4d'
+};
+
+let keys = {left:false,right:false,up:false,down:false};
+let running=false, startTime=0, elapsed=0, laps=0, totalLaps=3, bestLap=null, lapStart=0;
+let obstacles = [];
+let aiEnabled=false, aiCar=null;
+
+function resize(){
+  // keep fixed internal resolution for consistent gameplay
+}
+
+function rand(min,max){return Math.random()*(max-min)+min}
+
+function buildTrack(){
+  obstacles = [];
+  // create some random cones/obstacles
+  for(let i=0;i<18;i++){
+    obstacles.push({x:rand(W*0.45,W*0.95), y:rand(40,H-40), r:rand(8,18)});
+  }
+}
+
+function reset(){
+  car.x = W*0.2; car.y = H*0.5; car.angle=0; car.speed=0;
+  laps=0; elapsed=0; running=false; lapStart=0; bestLap=null;
+  buildTrack();
+}
+
+function startGame(){
+  reset(); running=true; startTime = performance.now(); lapStart = startTime;
+}
+
+// AI 車（簡單追蹤）
+function spawnAI(){
+  aiCar = {x: W*0.2, y:H*0.6, angle:0, speed:0, color:'#ffd166'};
+}
+
+function rectCircleColliding(rx,ry,rw,rh,cx,cy,cr){
+  // AABB vs circle collision
+  const closestX = Math.max(rx, Math.min(cx, rx+rw));
+  const closestY = Math.max(ry, Math.min(cy, ry+rh));
+  const dx = cx-closestX, dy = cy-closestY;
+  return (dx*dx+dy*dy) < cr*cr;
+}
+
+function update(dt){
+  // controls -> steering
+  if(keys.left) car.angle -= 0.04;
+  if(keys.right) car.angle += 0.04;
+  if(keys.up) car.speed += car.accel;
+  if(keys.down) car.speed -= car.accel*1.2;
+  // friction
+  if(!keys.up && !keys.down) car.speed -= Math.sign(car.speed)*car.friction;
+  // clamp
+  car.speed = Math.max(-2, Math.min(car.maxSpeed, car.speed));
+  // movement
+  car.x += Math.sin(car.angle)*car.speed*dt;
+  car.y -= Math.cos(car.angle)*car.speed*dt;
+  // bounds
+  car.x = Math.max(10, Math.min(W-10-car.width, car.x));
+  car.y = Math.max(10, Math.min(H-10-car.height, car.y));
+
+  // obstacle collisions
+  for(const ob of obstacles){
+    if(rectCircleColliding(car.x,car.y,car.width,car.height,ob.x,ob.y,ob.r)){
+      car.speed *= -0.4; // bounce back
+      car.x -= Math.sin(car.angle)*6;
+      car.y += Math.cos(car.angle)*6;
+    }
+  }
+
+  // simple lap detection: crossing finish line x>W*0.85 from left to right
+  const finishX = W*0.85;
+  if(car.x > finishX && ((car.x - car.speed*dt) <= finishX)){
+    laps++;
+    const now = performance.now();
+    const lapTime = now - lapStart;
+    lapStart = now;
+    if(bestLap===null || lapTime < bestLap) bestLap = lapTime;
+    if(laps >= totalLaps){ running=false; }
+  }
+
+  // AI
+  if(aiEnabled && aiCar){
+    // simple behavior: steer toward player Y and move forward
+    const dy = car.y - aiCar.y;
+    aiCar.angle += Math.sign(dy)*0.02;
+    aiCar.speed += 0.05;
+    aiCar.speed = Math.min(4, aiCar.speed);
+    aiCar.x += Math.sin(aiCar.angle)*aiCar.speed*dt;
+    aiCar.y -= Math.cos(aiCar.angle)*aiCar.speed*dt;
+  }
+}
+
+function formatTime(ms){
+  if(ms===0) return '00:00.000';
+  const s = Math.floor(ms/1000); const m = Math.floor(s/60); const remS = s%60;
+  const msPart = Math.floor(ms%1000).toString().padStart(3,'0');
+  return `${m.toString().padStart(2,'0')}:${remS.toString().padStart(2,'0')}.${msPart}`;
+}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  // track background
+  ctx.fillStyle = '#08304a';
+  ctx.fillRect(W*0.15,20,W*0.7,H-40);
+  // centerline
+  ctx.fillStyle = 'rgba(255,255,255,0.05)';
+  ctx.fillRect(W*0.15 + W*0.7*0.5 -2,20,4,H-40);
+
+  // finish line
+  ctx.fillStyle='#fff';
+  ctx.fillRect(W*0.85,20,4,H-40);
+
+  // obstacles
+  for(const ob of obstacles){
+    ctx.beginPath(); ctx.fillStyle='#c94a4a'; ctx.arc(ob.x,ob.y,ob.r,0,Math.PI*2); ctx.fill();
+  }
+
+  // draw AI
+  if(aiEnabled && aiCar){
+    ctx.save(); ctx.translate(aiCar.x+aiCar.width/2, aiCar.y+aiCar.height/2); ctx.rotate(aiCar.angle);
+    ctx.fillStyle = aiCar.color;
+    ctx.fillRect(-aiCar.width/2, -aiCar.height/2, aiCar.width, aiCar.height);
+    ctx.restore();
+  }
+
+  // draw player car
+  ctx.save(); ctx.translate(car.x+car.width/2, car.y+car.height/2); ctx.rotate(car.angle);
+  // body
+  ctx.fillStyle = car.color;
+  roundRect(ctx, -car.width/2, -car.height/2, car.width, car.height, 5, true, false);
+  // windshield
+  ctx.fillStyle='rgba(255,255,255,0.2)'; ctx.fillRect(-6,-car.height/2,12,10);
+  ctx.restore();
+
+  // HUD
+  document.getElementById('speed').innerText = (Math.abs(car.speed)*20).toFixed(0) + ' km/h';
+  document.getElementById('lap').innerText = `${laps} / ${totalLaps}`;
+  const now = running ? performance.now() - startTime : elapsed;
+  document.getElementById('time').innerText = formatTime(now);
+  document.getElementById('best').innerText = bestLap ? formatTime(bestLap) : '—';
+}
+
+function roundRect(ctx, x, y, w, h, r, fill, stroke) {
+  if (typeof r === 'undefined') r = 5;
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+  if (fill) ctx.fill();
+  if (stroke) ctx.stroke();
+}
+
+let last=performance.now();
+function loop(now){
+  const dt = Math.min(1.5, (now - last)/16.67);
+  last = now;
+  if(running) update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// input
+window.addEventListener('keydown', e=>{
+  if(e.key==='ArrowLeft') keys.left=true;
+  if(e.key==='ArrowRight') keys.right=true;
+  if(e.key==='ArrowUp') keys.up=true;
+  if(e.key==='ArrowDown') keys.down=true;
+});
+window.addEventListener('keyup', e=>{
+  if(e.key==='ArrowLeft') keys.left=false;
+  if(e.key==='ArrowRight') keys.right=false;
+  if(e.key==='ArrowUp') keys.up=false;
+  if(e.key==='ArrowDown') keys.down=false;
+});
+
+// touch buttons
+const leftBtn=document.getElementById('leftBtn');
+const rightBtn=document.getElementById('rightBtn');
+const accelBtn=document.getElementById('accelBtn');
+const brakeBtn=document.getElementById('brakeBtn');
+if(leftBtn){
+  leftBtn.addEventListener('touchstart',()=>keys.left=true); leftBtn.addEventListener('touchend',()=>keys.left=false);
+  rightBtn.addEventListener('touchstart',()=>keys.right=true); rightBtn.addEventListener('touchend',()=>keys.right=false);
+  accelBtn.addEventListener('touchstart',()=>keys.up=true); accelBtn.addEventListener('touchend',()=>keys.up=false);
+  brakeBtn.addEventListener('touchstart',()=>keys.down=true); brakeBtn.addEventListener('touchend',()=>keys.down=false);
+}
+
+// UI buttons
+document.getElementById('start').addEventListener('click', ()=>{ startGame(); });
+document.getElementById('toggleAI').addEventListener('click', (e)=>{ aiEnabled = !aiEnabled; if(aiEnabled) spawnAI(); e.target.innerText = aiEnabled ? '移除 AI' : '加 AI 對手'; });
+
+// allow local file open to play immediately
+reset();
+
+// helpful: allow window resize to maintain canvas aspect
+window.addEventListener('resize', ()=>{});
+
+// when game stops, freeze elapsed time
+setInterval(()=>{
+  if(!running && startTime) elapsed = lapStart - startTime;
+}, 100);
+</script>
+</body>
+</html>
